@@ -1387,7 +1387,32 @@ func TestBuildahCli_ManifestAdd(t *testing.T) {
 		}))
 	})
 
-	t.Run("should omit platform flags when arch and os are empty", func(t *testing.T) {
+	t.Run("should pass --variant when variant is set", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		args := &cliwrappers.BuildahManifestAddArgs{
+			ManifestName: manifestName,
+			ImageRef:     imageRef,
+			All:          true,
+			Arch:         "arm",
+			OS:           "linux",
+			Variant:      "v7",
+		}
+
+		err := buildahCli.ManifestAdd(args)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(Equal([]string{
+			"manifest", "add", manifestName, imageRef, "--all", "--arch", "arm", "--os", "linux", "--variant", "v7",
+		}))
+	})
+
+	t.Run("should omit platform flags when arch, os and variant are empty", func(t *testing.T) {
 		buildahCli, executor := setupBuildahCli()
 		var capturedArgs []string
 		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
@@ -1406,6 +1431,7 @@ func TestBuildahCli_ManifestAdd(t *testing.T) {
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(capturedArgs).ToNot(ContainElement("--arch"))
 		g.Expect(capturedArgs).ToNot(ContainElement("--os"))
+		g.Expect(capturedArgs).ToNot(ContainElement("--variant"))
 	})
 
 	t.Run("should error if manifest name is empty", func(t *testing.T) {

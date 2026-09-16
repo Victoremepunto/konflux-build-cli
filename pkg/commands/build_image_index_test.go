@@ -3,6 +3,7 @@ package commands
 import (
 	"testing"
 
+	"github.com/containerd/platforms"
 	. "github.com/onsi/gomega"
 )
 
@@ -161,10 +162,21 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 					"quay.io/org/myapp@" + validDigest1,
 					"quay.io/org/myapp@" + validDigest2,
 				},
-				ImagesPlatforms: []string{
+				ImagePlatformMap: []string{
 					"quay.io/org/myapp@" + validDigest1 + "=linux/amd64",
 					"quay.io/org/myapp@" + validDigest2 + "=linux/arm64",
 				},
+				BuildahFormat:    "oci",
+				AlwaysBuildIndex: true,
+			},
+			errExpected: false,
+		},
+		{
+			name: "should allow variant in platform mapping",
+			params: BuildImageIndexParams{
+				Image:            "quay.io/org/myapp:latest",
+				Images:           []string{"quay.io/org/myapp@" + validDigest1},
+				ImagePlatformMap: []string{"quay.io/org/myapp@" + validDigest1 + "=linux/arm/v7"},
 				BuildahFormat:    "oci",
 				AlwaysBuildIndex: true,
 			},
@@ -175,19 +187,19 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 			params: BuildImageIndexParams{
 				Image:            "quay.io/org/myapp:latest",
 				Images:           []string{"quay.io/org/myapp@" + validDigest1},
-				ImagesPlatforms:  []string{"quay.io/org/myapp@" + validDigest1 + "=amd64"},
+				ImagePlatformMap: []string{"quay.io/org/myapp@" + validDigest1 + "=amd64"},
 				BuildahFormat:    "oci",
 				AlwaysBuildIndex: true,
 			},
 			errExpected:  true,
-			errSubstring: "not in 'os/arch' form",
+			errSubstring: "os/arch",
 		},
 		{
 			name: "should fail when platform mapping references unknown image",
 			params: BuildImageIndexParams{
 				Image:            "quay.io/org/myapp:latest",
 				Images:           []string{"quay.io/org/myapp@" + validDigest1},
-				ImagesPlatforms:  []string{"quay.io/org/myapp@" + validDigest2 + "=linux/arm64"},
+				ImagePlatformMap: []string{"quay.io/org/myapp@" + validDigest2 + "=linux/arm64"},
 				BuildahFormat:    "oci",
 				AlwaysBuildIndex: true,
 			},
@@ -389,7 +401,7 @@ func Test_parseImagesPlatforms(t *testing.T) {
 	tests := []struct {
 		name         string
 		entries      []string
-		expected     map[string]ociPlatform
+		expected     map[string]platforms.Platform
 		errExpected  bool
 		errSubstring string
 	}{
@@ -404,9 +416,9 @@ func Test_parseImagesPlatforms(t *testing.T) {
 				"quay.io/org/repo@sha256:aaa=linux/amd64",
 				"quay.io/org/repo@sha256:bbb=linux/arm64",
 			},
-			expected: map[string]ociPlatform{
-				"quay.io/org/repo@sha256:aaa": {OS: "linux", Arch: "amd64"},
-				"quay.io/org/repo@sha256:bbb": {OS: "linux", Arch: "arm64"},
+			expected: map[string]platforms.Platform{
+				"quay.io/org/repo@sha256:aaa": {OS: "linux", Architecture: "amd64"},
+				"quay.io/org/repo@sha256:bbb": {OS: "linux", Architecture: "arm64"},
 			},
 		},
 		{
@@ -428,10 +440,27 @@ func Test_parseImagesPlatforms(t *testing.T) {
 			errSubstring: "os/arch",
 		},
 		{
+			name:         "platform with arch only errors",
+			entries:      []string{"quay.io/org/repo@sha256:aaa=amd64"},
+			errExpected:  true,
+			errSubstring: "os/arch",
+		},
+		{
 			name:         "platform with empty os errors",
 			entries:      []string{"quay.io/org/repo@sha256:aaa=/amd64"},
 			errExpected:  true,
 			errSubstring: "os/arch",
+		},
+		{
+			name: "parses variant correctly",
+			entries: []string{
+				"quay.io/org/repo@sha256:aaa=linux/arm/v7",
+				"quay.io/org/repo@sha256:bbb=linux/arm64/v8",
+			},
+			expected: map[string]platforms.Platform{
+				"quay.io/org/repo@sha256:aaa": {OS: "linux", Architecture: "arm", Variant: "v7"},
+				"quay.io/org/repo@sha256:bbb": {OS: "linux", Architecture: "arm64", Variant: "v8"},
+			},
 		},
 		{
 			name: "duplicate ref errors",

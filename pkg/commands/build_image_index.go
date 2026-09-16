@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/containerd/platforms"
 	"github.com/spf13/cobra"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
@@ -31,12 +32,12 @@ var BuildImageIndexParamsConfig = map[string]common.Parameter{
 		Usage:      "List of Image Manifests to be referenced by the Image Index.",
 		Required:   true,
 	},
-	"images-platforms": {
-		Name:       "images-platforms",
+	"image-platform-map": {
+		Name:       "image-platform-map",
 		ShortName:  "",
-		EnvVarName: "KBC_BUILD_IMAGE_INDEX_IMAGES_PLATFORMS",
+		EnvVarName: "KBC_BUILD_IMAGE_INDEX_IMAGE_PLATFORM_MAP",
 		TypeKind:   reflect.Slice,
-		Usage: "Optional per-image platform mapping as 'imageRef=os/arch' entries " +
+		Usage: "Optional per-image platform mapping as 'imageRef=os/arch[/variant]' entries " +
 			"(e.g. 'quay.io/org/repo@sha256:aaa=linux/amd64'). Used to set the " +
 			"platform on each index entry explicitly, which is required for OCI " +
 			"artifacts whose empty config carries no platform information. When " +
@@ -113,7 +114,7 @@ var BuildImageIndexParamsConfig = map[string]common.Parameter{
 type BuildImageIndexParams struct {
 	Image                 string   `paramName:"image"`
 	Images                []string `paramName:"images"`
-	ImagesPlatforms       []string `paramName:"images-platforms"`
+	ImagePlatformMap      []string `paramName:"image-platform-map"`
 	TLSVerify             bool     `paramName:"tls-verify"`
 	BuildahFormat         string   `paramName:"buildah-format"`
 	AlwaysBuildIndex      bool     `paramName:"always-build-index"`
@@ -146,49 +147,45 @@ type BuildImageIndex struct {
 	Results       BuildImageIndexResults
 	ResultsWriter common.ResultsWriterInterface
 
-	imageName   string
-	imageDigest string
-	imageURL    string
-	images      []string
-	// imagesPlatforms maps an --images entry to its OCI platform. Empty when
-	// no --images-platforms mapping was provided.
-	imagesPlatforms map[string]ociPlatform
+	imageName        string
+	imageDigest      string
+	imageURL         string
+	images           []string
+	imagePlatformMap map[string]platforms.Platform
 }
 
-// ociPlatform is a parsed "os/arch" platform.
-type ociPlatform struct {
-	OS   string
-	Arch string
-}
-
-// parseImagesPlatforms parses "imageRef=os/arch" entries into a map keyed by
-// image reference. Keying by reference (rather than position) makes the mapping
-// immune to matrix result ordering, which Tekton does not guarantee across
-// matrix legs. An empty input yields a nil map and no error.
-func parseImagesPlatforms(entries []string) (map[string]ociPlatform, error) {
+func parseImagesPlatforms(entries []string) (map[string]platforms.Platform, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
 
-	platforms := make(map[string]ociPlatform, len(entries))
+	result := make(map[string]platforms.Platform, len(entries))
 	for _, entry := range entries {
-		ref, platform, ok := strings.Cut(entry, "=")
+		ref, spec, ok := strings.Cut(entry, "=")
 		if !ok || ref == "" {
-			return nil, fmt.Errorf("entry %q is not in 'imageRef=os/arch' form", entry)
+			return nil, fmt.Errorf("entry %q is not in 'imageRef=os/arch[/variant]' form", entry)
 		}
 
-		os, arch, ok := strings.Cut(platform, "/")
-		if !ok || os == "" || arch == "" {
-			return nil, fmt.Errorf("platform %q in entry %q is not in 'os/arch' form", platform, entry)
+		if !strings.Contains(spec, "/") {
+			return nil, fmt.Errorf("platform %q in entry %q must be in 'os/arch[/variant]' form", spec, entry)
 		}
 
-		if _, dup := platforms[ref]; dup {
+		p, err := platforms.Parse(spec)
+		if err != nil {
+			return nil, fmt.Errorf("invalid platform %q in entry %q (want 'os/arch[/variant]'): %w", spec, entry, err)
+		}
+
+		if p.OS == "" || p.Architecture == "" {
+			return nil, fmt.Errorf("platform %q in entry %q must be in 'os/arch[/variant]' form", spec, entry)
+		}
+
+		if _, dup := result[ref]; dup {
 			return nil, fmt.Errorf("duplicate platform mapping for image %q", ref)
 		}
-		platforms[ref] = ociPlatform{OS: os, Arch: arch}
+		result[ref] = p
 	}
 
-	return platforms, nil
+	return result, nil
 }
 
 func NewBuildImageIndex(cmd *cobra.Command) (*BuildImageIndex, error) {
@@ -231,11 +228,11 @@ func (c *BuildImageIndex) Run() error {
 	c.imageName = common.GetImageName(c.Params.Image)
 	c.imageURL = c.Params.Image
 
-	platforms, err := parseImagesPlatforms(c.Params.ImagesPlatforms)
+	platformMap, err := parseImagesPlatforms(c.Params.ImagePlatformMap)
 	if err != nil {
-		return fmt.Errorf("invalid --images-platforms: %w", err)
+		return fmt.Errorf("invalid --image-platform-map: %w", err)
 	}
-	c.imagesPlatforms = platforms
+	c.imagePlatformMap = platformMap
 
 	if err := c.buildManifestIndex(); err != nil {
 		return fmt.Errorf("failed to build image index: %w", err)
@@ -308,10 +305,11 @@ func (c *BuildImageIndex) buildManifestIndex() error {
 			ImageRef:     "docker://" + normalizedRef,
 			All:          true,
 		}
-		if platform, ok := c.imagesPlatforms[imageRef]; ok {
+		if platform, ok := c.imagePlatformMap[imageRef]; ok {
 			addArgs.OS = platform.OS
-			addArgs.Arch = platform.Arch
-			l.Logger.Infof("Adding image to manifest: %s (platform %s/%s)", normalizedRef, platform.OS, platform.Arch)
+			addArgs.Arch = platform.Architecture
+			addArgs.Variant = platform.Variant
+			l.Logger.Infof("Adding image to manifest: %s (platform %s/%s)", normalizedRef, platform.OS, platform.Architecture)
 		} else {
 			l.Logger.Infof("Adding image to manifest: %s", normalizedRef)
 		}
@@ -427,16 +425,13 @@ func (c *BuildImageIndex) validateParams() error {
 		return fmt.Errorf("format must be 'oci' or 'docker', got '%s'", c.Params.BuildahFormat)
 	}
 
-	// Every platform mapping must reference an image passed via --images, so a
-	// typo'd or stale ref fails fast rather than silently leaving an entry's
-	// platform null.
-	platforms, err := parseImagesPlatforms(c.Params.ImagesPlatforms)
+	platformMap, err := parseImagesPlatforms(c.Params.ImagePlatformMap)
 	if err != nil {
-		return fmt.Errorf("invalid --images-platforms: %w", err)
+		return fmt.Errorf("invalid --image-platform-map: %w", err)
 	}
-	for ref := range platforms {
+	for ref := range platformMap {
 		if !seenImages[ref] {
-			return fmt.Errorf("--images-platforms references %q which is not in --images", ref)
+			return fmt.Errorf("--image-platform-map references %q which is not in --images", ref)
 		}
 	}
 

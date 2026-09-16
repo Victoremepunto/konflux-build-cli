@@ -712,12 +712,12 @@ type BuildahManifestAddArgs struct {
 	ManifestName string
 	ImageRef     string
 	All          bool
-	// Arch sets the platform.architecture of the added list entry (e.g. "amd64").
-	// Required for OCI artifacts that carry an empty config, since buildah cannot
-	// infer the platform from such a manifest and would leave it null otherwise.
-	Arch string
-	// OS sets the platform.os of the added list entry (e.g. "linux").
-	OS string
+	// Arch, OS and Variant set the list entry's platform explicitly. buildah
+	// cannot infer platform from an artifact's empty config, so without these
+	// the entry is left with a null platform.
+	Arch    string
+	OS      string
+	Variant string
 }
 
 // ManifestAdd adds an image to a manifest list
@@ -735,15 +735,14 @@ func (b *BuildahCli) ManifestAdd(args *BuildahManifestAddArgs) error {
 		buildahArgs = append(buildahArgs, "--all")
 	}
 
-	// Explicitly set the platform on the list entry. buildah only infers
-	// platform from a config it recognizes as an image config; artifact
-	// manifests use an empty config, so without these flags the entry's
-	// platform is left null.
 	if args.Arch != "" {
 		buildahArgs = append(buildahArgs, "--arch", args.Arch)
 	}
 	if args.OS != "" {
 		buildahArgs = append(buildahArgs, "--os", args.OS)
+	}
+	if args.Variant != "" {
+		buildahArgs = append(buildahArgs, "--variant", args.Variant)
 	}
 
 	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
