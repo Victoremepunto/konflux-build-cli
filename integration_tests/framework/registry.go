@@ -53,9 +53,17 @@ type ImageIndexManifest struct {
 	Manifests   []ImageManifest `json:"manifests,omitempty"`
 	RawManifest []byte          `json:"-"`
 }
+
+type ImagePlatform struct {
+	Architecture string `json:"architecture,omitempty"`
+	OS           string `json:"os,omitempty"`
+	Variant      string `json:"variant,omitempty"`
+}
+
 type ImageManifest struct {
-	MediaType string `json:"mediaType,omitempty"`
-	Digest    string `json:"digest,omitempty"`
+	MediaType string         `json:"mediaType,omitempty"`
+	Digest    string         `json:"digest,omitempty"`
+	Platform  *ImagePlatform `json:"platform,omitempty"`
 }
 
 func GenerateDockerAuthContent(registry, login, password string) ([]byte, error) {

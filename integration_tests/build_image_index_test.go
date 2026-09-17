@@ -24,6 +24,7 @@ type BuildImageIndexParams struct {
 	TLSVerify             *bool
 	AlwaysBuildIndex      *bool
 	AdditionalTags        []string
+	ImagePlatformMap      []string
 	ResultPathImageDigest string
 	ResultPathImageURL    string
 	ResultPathImageRef    string
@@ -74,6 +75,11 @@ func RunBuildImageIndex(params BuildImageIndexParams, imageRegistry ImageRegistr
 	if len(params.AdditionalTags) > 0 {
 		args = append(args, "--additional-tags")
 		args = append(args, params.AdditionalTags...)
+	}
+
+	if len(params.ImagePlatformMap) > 0 {
+		args = append(args, "--image-platform-map")
+		args = append(args, params.ImagePlatformMap...)
 	}
 
 	if params.ResultPathImageDigest != "" {
@@ -202,6 +208,117 @@ func TestBuildImageIndex_MultipleImages(t *testing.T) {
 
 	// Check that platform image digests are included in the index
 	Expect(obtainedDigests).To(ConsistOf(digest1, digest2))
+
+	// Verify the digest matches the actual manifest digest
+	actualDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(imageIndexInfo.RawManifest))
+	Expect(results.ImageDigest).To(Equal(actualDigest))
+}
+
+func TestBuildImageIndex_ImagePlatformMap(t *testing.T) {
+	SetupGomega(t)
+	var err error
+
+	imageRegistry := SetupImageRegistry(t)
+
+	// Create input data
+	baseImageRepo := imageRegistry.GetTestNamespace() + "test-image-platform-map"
+	tag := GenerateUniqueTag(t)
+	indexImage := baseImageRepo + ":" + tag
+
+	// Create and push two platform images (simulating amd64 and arm64)
+	image1Ref := baseImageRepo + "-platform1:" + tag
+	image2Ref := baseImageRepo + "-platform2:" + tag
+
+	err = CreateTestImage(TestImageConfig{
+		ImageRef:       image1Ref,
+		RandomDataSize: 1024,
+		Labels: map[string]string{
+			"platform": "amd64",
+		},
+	})
+	Expect(err).ToNot(HaveOccurred())
+	defer DeleteLocalImage(image1Ref)
+
+	err = CreateTestImage(TestImageConfig{
+		ImageRef:       image2Ref,
+		RandomDataSize: 2048,
+		Labels: map[string]string{
+			"platform": "arm64",
+		},
+	})
+	Expect(err).ToNot(HaveOccurred())
+	defer DeleteLocalImage(image2Ref)
+
+	digest1, err := PushImage(image1Ref)
+	Expect(err).ToNot(HaveOccurred())
+
+	digest2, err := PushImage(image2Ref)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Build the image references with digests
+	imageRepo1 := common.GetImageName(image1Ref)
+	imageRepo2 := common.GetImageName(image2Ref)
+	image1WithDigest := imageRepo1 + "@" + digest1
+	image2WithDigest := imageRepo2 + "@" + digest2
+
+	// Run the command with image platform map
+	params := BuildImageIndexParams{
+		Image:            indexImage,
+		Images:           []string{image1WithDigest, image2WithDigest},
+		BuildahFormat:    "oci",
+		TLSVerify:        new(true),
+		AlwaysBuildIndex: new(true),
+		ImagePlatformMap: []string{image1WithDigest + "=linux/amd64", image2WithDigest + "=linux/arm64"},
+	}
+
+	output, _, err := RunBuildImageIndex(params, imageRegistry, true)
+	Expect(err).ToNot(HaveOccurred())
+	results := output.Results
+
+	// Verify results
+	Expect(results.ImageURL).To(Equal(indexImage))
+	Expect(results.ImageDigest).ToNot(BeEmpty())
+	Expect(results.ImageDigest).To(HavePrefix("sha256:"))
+	Expect(results.ImageRef).To(Equal(baseImageRepo + "@" + results.ImageDigest))
+
+	// Images should contain both platform image digests (order may vary)
+	Expect(results.Images).To(Or(
+		Equal(baseImageRepo+"@"+digest1+","+baseImageRepo+"@"+digest2),
+		Equal(baseImageRepo+"@"+digest2+","+baseImageRepo+"@"+digest1),
+	))
+
+	// Verify the index was pushed to registry
+	tagExists, err := CheckManifestExistence(imageRegistry, baseImageRepo, tag)
+	Expect(err).ToNot(HaveOccurred())
+	Expect(tagExists).To(BeTrue(), fmt.Sprintf("Expected %s to exist", indexImage))
+
+	// Verify the manifest is actually an index (multi-arch)
+	imageIndexInfo, err := GetImageIndexInfo(imageRegistry, baseImageRepo, tag)
+	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("failed to get image index %s:%s", baseImageRepo, tag))
+	Expect(imageIndexInfo.MediaType).To(Equal(constants.OCIImageIndex),
+		"Created reference is not an OCI image index")
+	Expect(imageIndexInfo.Manifests).To(HaveLen(2))
+
+	// Build a map from child digest to child platform to verify platform assertions
+	digestToPlatform := make(map[string]*ImagePlatform)
+	obtainedDigests := make([]string, 0, 2)
+	for _, manifestInfo := range imageIndexInfo.Manifests {
+		Expect(manifestInfo.MediaType).To(Equal(constants.OCIImageManifest))
+		obtainedDigests = append(obtainedDigests, manifestInfo.Digest)
+		digestToPlatform[manifestInfo.Digest] = manifestInfo.Platform
+	}
+
+	// Check that platform image digests are included in the index
+	Expect(obtainedDigests).To(ConsistOf(digest1, digest2))
+
+	// Verify platforms are correctly set on child manifests
+	Expect(digestToPlatform[digest1]).ToNot(BeNil())
+	Expect(digestToPlatform[digest1].Architecture).To(Equal("amd64"))
+	Expect(digestToPlatform[digest1].OS).To(Equal("linux"))
+
+	Expect(digestToPlatform[digest2]).ToNot(BeNil())
+	Expect(digestToPlatform[digest2].Architecture).To(Equal("arm64"))
+	Expect(digestToPlatform[digest2].OS).To(Equal("linux"))
 
 	// Verify the digest matches the actual manifest digest
 	actualDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(imageIndexInfo.RawManifest))

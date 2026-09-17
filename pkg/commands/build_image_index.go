@@ -309,7 +309,7 @@ func (c *BuildImageIndex) buildManifestIndex() error {
 			addArgs.OS = platform.OS
 			addArgs.Arch = platform.Architecture
 			addArgs.Variant = platform.Variant
-			l.Logger.Infof("Adding image to manifest: %s (platform %s/%s)", normalizedRef, platforms.FormatAll(platform))
+			l.Logger.Infof("Adding image to manifest: %s (platform %s)", normalizedRef, platforms.FormatAll(platform))
 		} else {
 			l.Logger.Infof("Adding image to manifest: %s", normalizedRef)
 		}
