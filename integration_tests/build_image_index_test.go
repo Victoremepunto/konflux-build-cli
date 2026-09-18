@@ -225,7 +225,11 @@ func TestBuildImageIndex_ImagePlatformMap(t *testing.T) {
 	tag := GenerateUniqueTag(t)
 	indexImage := baseImageRepo + ":" + tag
 
-	// Create and push two platform images (simulating amd64 and arm64)
+	// Create and push two platform images. Deliberately use platforms that are
+	// never a developer's own machine (s390x, ppc64le) so a broken
+	// --image-platform-map override cannot accidentally pass by matching the
+	// host arch (see review discussion on
+	// https://github.com/konflux-ci/konflux-build-cli/pull/249).
 	image1Ref := baseImageRepo + "-platform1:" + tag
 	image2Ref := baseImageRepo + "-platform2:" + tag
 
@@ -233,7 +237,7 @@ func TestBuildImageIndex_ImagePlatformMap(t *testing.T) {
 		ImageRef:       image1Ref,
 		RandomDataSize: 1024,
 		Labels: map[string]string{
-			"platform": "amd64",
+			"platform": "s390x",
 		},
 	})
 	Expect(err).ToNot(HaveOccurred())
@@ -243,7 +247,7 @@ func TestBuildImageIndex_ImagePlatformMap(t *testing.T) {
 		ImageRef:       image2Ref,
 		RandomDataSize: 2048,
 		Labels: map[string]string{
-			"platform": "arm64",
+			"platform": "ppc64le",
 		},
 	})
 	Expect(err).ToNot(HaveOccurred())
@@ -268,7 +272,7 @@ func TestBuildImageIndex_ImagePlatformMap(t *testing.T) {
 		BuildahFormat:    "oci",
 		TLSVerify:        new(true),
 		AlwaysBuildIndex: new(true),
-		ImagePlatformMap: []string{image1WithDigest + "=linux/amd64", image2WithDigest + "=linux/arm64"},
+		ImagePlatformMap: []string{image1WithDigest + "=linux/s390x", image2WithDigest + "=linux/ppc64le"},
 	}
 
 	output, _, err := RunBuildImageIndex(params, imageRegistry, true)
@@ -313,11 +317,11 @@ func TestBuildImageIndex_ImagePlatformMap(t *testing.T) {
 
 	// Verify platforms are correctly set on child manifests
 	Expect(digestToPlatform[digest1]).ToNot(BeNil())
-	Expect(digestToPlatform[digest1].Architecture).To(Equal("amd64"))
+	Expect(digestToPlatform[digest1].Architecture).To(Equal("s390x"))
 	Expect(digestToPlatform[digest1].OS).To(Equal("linux"))
 
 	Expect(digestToPlatform[digest2]).ToNot(BeNil())
-	Expect(digestToPlatform[digest2].Architecture).To(Equal("arm64"))
+	Expect(digestToPlatform[digest2].Architecture).To(Equal("ppc64le"))
 	Expect(digestToPlatform[digest2].OS).To(Equal("linux"))
 
 	// Verify the digest matches the actual manifest digest
